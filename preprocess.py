@@ -4,7 +4,7 @@ import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from transformers import AutoTokenizer, AutoModel
 import torch
-from nltk import download
+from nltk import download, ngrams
 from sklearn.feature_extraction.text import TfidfVectorizer
 from scipy.spatial.distance import euclidean
 from vncorenlp import VnCoreNLP
@@ -63,14 +63,12 @@ def convert_floats(data):
     elif isinstance(data, (np.float32, np.float64)):
         return float(data)
     elif isinstance(data, np.ndarray):
-        return data.tolist()  # Chuyển đổi mảng numpy thành danh sách
+        return data.tolist()
     return data
 
 def save_json(data, filename):
     with open(filename, 'w', encoding='utf-8') as file:
         json.dump(data, file, indent=4, ensure_ascii=False, default=lambda o: float(o) if isinstance(o, (np.float32, np.float64)) else o)
-
-
 
 # Tải PhoBERT model và tokenizer
 tokenizer = AutoTokenizer.from_pretrained("vinai/phobert-base")
@@ -84,11 +82,9 @@ def get_phobert_embeddings(text):
         embeddings = outputs.last_hidden_state.mean(dim=1).squeeze().cpu().numpy()
     return embeddings
 
-
 # Hàm tính cosine similarity
 def compute_cosine_similarity(vec1, vec2):
     return cosine_similarity([vec1], [vec2])[0][0]
-
 
 # Hàm tính Euclidean Distance
 def compute_euclidean_distance(vec1, vec2):
@@ -115,9 +111,21 @@ def preprocess_text_combined(text, synonyms_dict, stopwords, tfidf_vectorizer, m
         return chunks
 
     def preprocess_chunk(chunk, synonyms_dict, stopwords, tfidf_vectorizer):
-        tokens = vncorenlp.tokenize(chunk)[0]  # Tách từ bằng VnCoreNLP
-        words = [str(synonyms_dict.get(word, word)) for word in tokens if word.lower() not in stopwords]
-        processed_chunk = ' '.join(words)
+        annotated = vncorenlp.annotate(chunk)
+        tokens_with_pos = [(word['form'], word['posTag']) for sent in annotated['sentences'] for word in sent]
+        
+        processed_tokens = []
+        for word, pos in tokens_with_pos:
+            if word.lower() not in stopwords:
+                synonym = synonyms_dict.get(word, word)
+                processed_tokens.append(f"{synonym}_{pos}")
+        
+        bigrams = list(ngrams(processed_tokens, 2))
+        trigrams = list(ngrams(processed_tokens, 3))
+        
+        all_grams = processed_tokens + [f"{w1}_{w2}" for w1, w2 in bigrams] + [f"{w1}_{w2}_{w3}" for w1, w2, w3 in trigrams]
+        
+        processed_chunk = ' '.join(all_grams)
         tfidf_vector = tfidf_vectorizer.transform([processed_chunk]).toarray()
         return processed_chunk, tfidf_vector
 
@@ -163,8 +171,8 @@ def preprocess_data(data, legal_passages, synonyms_dict, stopwords):
                 passage_text = legal_dict[law_id][article_id]
                 all_texts.append(passage_text)
 
-    # Khởi tạo TF-IDF vectorizer với tất cả các văn bản
-    tfidf_vectorizer = TfidfVectorizer().fit(all_texts)
+    # Khởi tạo TF-IDF vectorizer với tất cả các văn bản và n-grams
+    tfidf_vectorizer = TfidfVectorizer(ngram_range=(1, 3)).fit(all_texts)
     
     processed_data = [preprocess_item(item, legal_dict, synonyms_dict, stopwords, tfidf_vectorizer) 
                       for item in data]
